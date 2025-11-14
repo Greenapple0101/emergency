@@ -1,0 +1,37 @@
+# 개발 환경용 (MySQL 없이 H2 사용)
+name: sca-system-dev
+
+services:
+  backend:
+    build:
+      context: ./back
+      dockerfile: Dockerfile
+    container_name: sca-backend-dev
+    image: sca-backend:dev
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: dev
+      # H2는 인메모리 DB이므로 별도 설정 불필요
+    networks:
+      - sca-network-dev
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./front
+      dockerfile: Dockerfile
+    container_name: sca-frontend-dev
+    image: sca-frontend:dev
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    networks:
+      - sca-network-dev
+    restart: unless-stopped
+
+networks:
+  sca-network-dev:
+    driver: bridge
+

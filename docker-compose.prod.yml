@@ -1,0 +1,71 @@
+# 프로덕션 환경용 (MySQL 포함 또는 외부 DB 사용)
+name: sca-system-prod
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: sca-db
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-1234}
+      MYSQL_DATABASE: ${DB_NAME:-sca_db}
+      TZ: Asia/Seoul
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./back/src/main/resources/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    networks:
+      - sca-network-prod
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${DB_PASSWORD:-1234}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./back
+      dockerfile: Dockerfile
+    container_name: sca-backend
+    image: sca-backend:latest
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      # 외부 MySQL 사용 시: DB_URL 환경변수로 설정
+      # 예: DB_URL=jdbc:mysql://외부호스트:3306/sca_db?useSSL=false&serverTimezone=Asia/Seoul&characterEncoding=UTF-8
+      DB_URL: ${DB_URL:-jdbc:mysql://mysql:3306/${DB_NAME:-sca_db}?useSSL=false&serverTimezone=Asia/Seoul&characterEncoding=UTF-8}
+      DB_USERNAME: ${DB_USERNAME:-root}
+      DB_PASSWORD: ${DB_PASSWORD:-1234}
+      JWT_SECRET: ${JWT_SECRET:-your-secret-key-must-be-at-least-256-bits-long-for-HS256-algorithm-security}
+      JWT_EXPIRATION: ${JWT_EXPIRATION:-900000}
+      JWT_REFRESH_EXPIRATION: ${JWT_REFRESH_EXPIRATION:-604800000}
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      - sca-network-prod
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./front
+      dockerfile: Dockerfile
+    container_name: sca-frontend
+    image: sca-frontend:latest
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    networks:
+      - sca-network-prod
+    restart: unless-stopped
+
+volumes:
+  mysql_data:
+
+networks:
+  sca-network-prod:
+    driver: bridge
+
