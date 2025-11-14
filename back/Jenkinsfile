@@ -1,0 +1,207 @@
+pipeline {
+    agent any
+    
+    environment {
+        // 서버 정보
+        SERVER_URL = 'http://16.176.15.30'
+        DOCKER_REGISTRY = '16.176.15.30:5000'  // Docker Registry가 있다면
+        IMAGE_NAME = 'sca-backend'
+        IMAGE_TAG = "${env.BUILD_NUMBER}"
+        
+        // 데이터베이스 정보
+        DB_HOST = 'mysql'
+        DB_NAME = 'sca_db'
+        DB_USER = 'root'
+        DB_PASSWORD = credentials('mysql-root-password') ?: '1234'
+        
+        // 애플리케이션 환경변수
+        JWT_SECRET = credentials('jwt-secret') ?: 'your-secret-key-must-be-at-least-256-bits-long-for-HS256-algorithm-security'
+        JWT_EXPIRATION = '900000'
+        JWT_REFRESH_EXPIRATION = '604800000'
+    }
+    
+    stages {
+        stage('Checkout') {
+            steps {
+                echo '📦 소스 코드 체크아웃...'
+                checkout scm
+                sh 'git log -1 --pretty=format:"%h - %an, %ar : %s"'
+            }
+        }
+        
+        stage('Build') {
+            steps {
+                echo '🔨 Gradle 빌드 시작...'
+                sh '''
+                    chmod +x ./gradlew
+                    ./gradlew clean build -x test
+                '''
+            }
+            post {
+                success {
+                    echo '✅ 빌드 성공!'
+                    archiveArtifacts artifacts: 'build/libs/*.jar', fingerprint: true
+                }
+                failure {
+                    echo '❌ 빌드 실패!'
+                }
+            }
+        }
+        
+        stage('Test') {
+            when {
+                expression { params.RUN_TESTS == true }
+            }
+            steps {
+                echo '🧪 테스트 실행...'
+                sh './gradlew test'
+            }
+            post {
+                always {
+                    junit 'build/test-results/test/*.xml'
+                }
+            }
+        }
+        
+        stage('Copy JAR') {
+            steps {
+                echo '📋 JAR 파일 준비...'
+                sh '''
+                    cp build/libs/*.jar app.jar
+                '''
+            }
+        }
+        
+        stage('Docker Build') {
+            steps {
+                echo '🐳 Docker 이미지 빌드...'
+                script {
+                    def image = docker.build("${IMAGE_NAME}:${IMAGE_TAG}")
+                    def latestImage = docker.build("${IMAGE_NAME}:latest")
+                    
+                    // 이미지 태그 저장
+                    env.DOCKER_IMAGE = "${IMAGE_NAME}:${IMAGE_TAG}"
+                }
+            }
+        }
+        
+        stage('Docker Push') {
+            when {
+                expression { params.PUSH_TO_REGISTRY == true }
+            }
+            steps {
+                echo '📤 Docker 이미지 푸시...'
+                script {
+                    docker.withRegistry("http://${DOCKER_REGISTRY}") {
+                        docker.image("${IMAGE_NAME}:${IMAGE_TAG}").push()
+                        docker.image("${IMAGE_NAME}:latest").push()
+                    }
+                }
+            }
+        }
+        
+        stage('Deploy') {
+            steps {
+                echo '🚀 배포 시작...'
+                script {
+                    // Docker Compose로 배포
+                    // 외부 MySQL 사용 시: docker-compose.server.yml 사용
+                    sh '''
+                        COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.server.yml}"
+                        docker compose -f ${COMPOSE_FILE} down || true
+                        docker compose -f ${COMPOSE_FILE} up -d --build
+                    '''
+                }
+            }
+        }
+        
+        stage('Health Check') {
+            steps {
+                echo '🏥 Health Check...'
+                script {
+                    def maxAttempts = 30
+                    def waitTime = 10
+                    def attempt = 0
+                    def healthy = false
+                    
+                    while (attempt < maxAttempts && !healthy) {
+                        sleep(waitTime)
+                        attempt++
+                        
+                        try {
+                            def response = sh(
+                                script: "curl -s -o /dev/null -w '%{http_code}' ${SERVER_URL}:8080/actuator/health",
+                                returnStdout: true
+                            ).trim()
+                            
+                            if (response == '200') {
+                                healthy = true
+                                echo "✅ Health Check 성공! (시도 ${attempt}/${maxAttempts})"
+                            } else {
+                                echo "⏳ Health Check 대기 중... (시도 ${attempt}/${maxAttempts}, 응답: ${response})"
+                            }
+                        } catch (Exception e) {
+                            echo "⏳ 서버 시작 대기 중... (시도 ${attempt}/${maxAttempts})"
+                        }
+                    }
+                    
+                    if (!healthy) {
+                        error("❌ Health Check 실패! 서버가 정상적으로 시작되지 않았습니다.")
+                    }
+                }
+            }
+        }
+        
+        stage('Smoke Test') {
+            steps {
+                echo '💨 Smoke Test 실행...'
+                script {
+                    // 기본 API 테스트
+                    def healthCheck = sh(
+                        script: "curl -s ${SERVER_URL}:8080/actuator/health",
+                        returnStdout: true
+                    ).trim()
+                    
+                    echo "Health Check 응답: ${healthCheck}"
+                    
+                    if (!healthCheck.contains('UP')) {
+                        error("❌ Smoke Test 실패! Health Check가 UP 상태가 아닙니다.")
+                    }
+                    
+                    echo '✅ Smoke Test 통과!'
+                }
+            }
+        }
+    }
+    
+    post {
+        success {
+            echo '🎉 파이프라인 성공!'
+            script {
+                // 성공 알림 (Slack, Email 등)
+                // slackSend(
+                //     channel: '#deployment',
+                //     color: 'good',
+                //     message: "✅ SCA-BE 배포 성공!\n빌드 번호: ${env.BUILD_NUMBER}\n서버: ${SERVER_URL}"
+                // )
+            }
+        }
+        failure {
+            echo '❌ 파이프라인 실패!'
+            script {
+                // 실패 알림
+                // slackSend(
+                //     channel: '#deployment',
+                //     color: 'danger',
+                //     message: "❌ SCA-BE 배포 실패!\n빌드 번호: ${env.BUILD_NUMBER}\n로그 확인 필요"
+                // )
+            }
+        }
+        always {
+            echo '🧹 정리 작업...'
+            // 정리 작업 (옵션)
+            // cleanWs()
+        }
+    }
+}
+
