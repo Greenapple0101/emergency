@@ -1,7 +1,10 @@
+# 서버 배포용 (emergency 폴더 루트에 배치)
+# 폴더 구조가 backend/frontend인 경우 사용
+
 services:
   backend:
     build:
-      context: ./back
+      context: ./backend
       dockerfile: Dockerfile
     container_name: sca-backend
     ports:
@@ -15,7 +18,7 @@ services:
 
   frontend:
     build:
-      context: ./front
+      context: ./frontend
       dockerfile: Dockerfile
     container_name: sca-frontend
     ports:
@@ -29,3 +32,4 @@ services:
 networks:
   sca-net:
     driver: bridge
+
